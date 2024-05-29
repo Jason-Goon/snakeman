@@ -1,6 +1,6 @@
-# Snakeman Video Processing
+# Snakeman CLI
 
-This repository contains a Python script that processes a boxing match video, extracts frames, generates descriptions for those frames, summarizes the descriptions, and creates a final video with text-to-speech (TTS) audio overlayed on a rap beat.
+This repository contains a Python script that processes a video, extracts frames, generates descriptions for those frames, summarizes the descriptions, and creates a final video with text-to-speech (TTS) audio overlayed on a rap beat.
 
 ## Features
 
