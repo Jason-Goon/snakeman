@@ -24,7 +24,7 @@ This repository contains a Python script that processes a boxing match video, ex
 ```bash
 # Create and activate virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+source venv/bin/activate  
 
 # Install dependencies using pip
 pip install yt-dlp opencv-python pytesseract Pillow gtts ffmpeg-python pydub transformers torch torchvision torchaudio
