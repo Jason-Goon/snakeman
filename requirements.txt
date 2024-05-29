@@ -1,0 +1,11 @@
+yt-dlp
+opencv-python
+pytesseract
+Pillow
+gtts
+ffmpeg-python
+pydub
+transformers
+torch  # Include either torch or tensorflow
+torchvision
+torchaudio
