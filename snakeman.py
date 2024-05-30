@@ -12,13 +12,12 @@ from openai import OpenAI
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Initialize the image-to-text model
+
 image_to_text_model = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
 
-# Function to clean up folders except the final clips folder
+
 def cleanup_folder(folder, exclude=[]):
     if os.path.exists(folder):
         for file in os.listdir(folder):
@@ -28,7 +27,6 @@ def cleanup_folder(folder, exclude=[]):
     else:
         os.makedirs(folder)
 
-# Function to extract frames from video for analysis
 def extract_frames(video_path, output_folder, interval=20):
     print("Extracting frames...")
     if not os.path.exists(output_folder):
@@ -50,7 +48,6 @@ def extract_frames(video_path, output_folder, interval=20):
     cap.release()
     print(f"Extracted frames to {output_folder}")
 
-# Function to generate descriptions for frames
 def generate_descriptions(frames_folder, user_description):
     print("Generating descriptions for frames...")
     descriptions = []
@@ -73,7 +70,6 @@ def generate_descriptions(frames_folder, user_description):
 
     return descriptions
 
-# Function to summarize descriptions with GPT-4
 def summarize_descriptions(descriptions, user_description=""):
     print("Summarizing descriptions...")
     concatenated_text = user_description + " " + " ".join(descriptions)
@@ -88,15 +84,10 @@ def summarize_descriptions(descriptions, user_description=""):
     summary = response.choices[0].message.content
     return summary
 
-# Function to generate TTS for summary and combine with beats
 def generate_tts_for_summary(summary, tts_output_folder, rap_beats_folder):
-    # Ensure the output folder exists
-    os.makedirs(tts_output_folder, exist_ok=True)
-    
-    # Initialize TTS
-    tts = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC")
 
-    # Generate TTS
+    os.makedirs(tts_output_folder, exist_ok=True)
+    tts = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC")
     tts_output_path = os.path.join(tts_output_folder, "summary_tts.wav")
     try:
         print(f"Generating TTS for summary: {summary}")
@@ -104,22 +95,20 @@ def generate_tts_for_summary(summary, tts_output_folder, rap_beats_folder):
     except RuntimeError as e:
         print(f"Error during TTS generation: {e}")
         return False
-    
-    # List all beats in the folder
+   
     beat_files = [file for file in os.listdir(rap_beats_folder) if file.endswith('.wav')]
     if not beat_files:
         print("No beat files found in the directory.")
         return False
     
-    # Select a random beat
+
     beat_path = os.path.join(rap_beats_folder, random.choice(beat_files))
     
-    # Convert beat to WAV format
+
     beat_audio = AudioSegment.from_wav(beat_path)
     beat_wav_path = os.path.join(tts_output_folder, "selected_beat.wav")
     beat_audio.export(beat_wav_path, format="wav")
 
-    # Ensure TTS duration is at least 25 seconds
     tts_audio = AudioSegment.from_wav(tts_output_path)
     tts_duration_ms = tts_audio.duration_seconds * 1000
     if tts_duration_ms < 25 * 1000:
@@ -128,21 +117,20 @@ def generate_tts_for_summary(summary, tts_output_folder, rap_beats_folder):
         tts_audio = tts_audio + silence
         tts_duration_ms = 25 * 1000
 
-    # If more than 60 seconds, trim it to 60 seconds
+ 
     if tts_duration_ms > 60 * 1000:
         tts_audio = tts_audio[:60 * 1000]
         tts_duration_ms = 60 * 1000
 
-    beat_audio = beat_audio[:tts_duration_ms]  # Trim beat to match TTS duration
+    beat_audio = beat_audio[:tts_duration_ms]
     
-    # Combine the TTS and beat audio
+
     combined = beat_audio.overlay(tts_audio)
     combined_output_path = os.path.join(tts_output_folder, "combined_summary.mp3")
     combined.export(combined_output_path, format="mp3")
     
     return True
 
-# Function to create final clip
 def create_final_clip(video_path, tts_output_folder, project_folder):
     print("Creating final clip...")
     if not os.path.exists(project_folder):
@@ -159,15 +147,15 @@ def create_final_clip(video_path, tts_output_folder, project_folder):
     final_output_path = os.path.join(project_folder, output_video_name)
     final_output_temp_path = os.path.join(project_folder, "final_temp_clip.mp4")
 
-    # Clear the temporary clip if it exists
+   
     if os.path.exists(final_output_temp_path):
         os.remove(final_output_temp_path)
 
-    # Get the duration of the TTS audio
+ 
     tts_audio = AudioSegment.from_mp3(tts_path)
     tts_duration = tts_audio.duration_seconds
 
-    # Trim the video to the duration of the TTS audio and convert to portrait mode (9:16 aspect ratio)
+   
     (
         ffmpeg
         .input(video_path, ss=0, t=tts_duration)
@@ -177,7 +165,6 @@ def create_final_clip(video_path, tts_output_folder, project_folder):
         .run()
     )
     
-    # Combine the TTS audio with the video
     video = ffmpeg.input(final_output_temp_path)
     audio = ffmpeg.input(tts_path)
 
@@ -189,7 +176,7 @@ def create_final_clip(video_path, tts_output_folder, project_folder):
 
     print(f'Final clip saved to "{final_output_path}"')
 
-# Main function to process all videos in the source_material folder
+
 def main(source_folder, old_source_folder, project_folder, user_description=""):
     if not os.path.exists(old_source_folder):
         os.makedirs(old_source_folder)
@@ -201,19 +188,13 @@ def main(source_folder, old_source_folder, project_folder, user_description=""):
         frames_folder = 'frames'
         tts_output_folder = 'tts_outputs'
         rap_beats_folder = 'rap_beats'
-
-        # Cleanup folders except final clips
+        
         cleanup_folder(frames_folder)
         cleanup_folder(tts_output_folder)
-
-        # Extract frames
         extract_frames(video_path, frames_folder)
-
-        # Process video
+        
         descriptions = generate_descriptions(frames_folder, user_description)
         summary = summarize_descriptions(descriptions, user_description)
-        
-        # Save summary to file
         summary_path = os.path.join(tts_output_folder, "summary.txt")
         with open(summary_path, 'w') as f:
             f.write(summary)
@@ -224,8 +205,6 @@ def main(source_folder, old_source_folder, project_folder, user_description=""):
             continue
         
         create_final_clip(video_path, tts_output_folder, project_folder)
-
-        # Move processed video to old_source_material
         shutil.move(video_path, os.path.join(old_source_folder, video_file))
 
 if __name__ == "__main__":
