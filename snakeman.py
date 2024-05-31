@@ -7,16 +7,15 @@ from PIL import Image
 import ffmpeg
 from pydub import AudioSegment
 from transformers import pipeline
-from TTS.api import TTS
+from google.cloud import texttospeech
 from openai import OpenAI
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
 image_to_text_model = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
 
+tts_client = texttospeech.TextToSpeechClient()
 
 def cleanup_folder(folder, exclude=[]):
     if os.path.exists(folder):
@@ -26,6 +25,7 @@ def cleanup_folder(folder, exclude=[]):
                 os.remove(file_path)
     else:
         os.makedirs(folder)
+
 
 def extract_frames(video_path, output_folder, interval=20):
     print("Extracting frames...")
@@ -48,11 +48,12 @@ def extract_frames(video_path, output_folder, interval=20):
     cap.release()
     print(f"Extracted frames to {output_folder}")
 
-def generate_descriptions(frames_folder, user_description):
+def generate_descriptions(frames_folder, user_description, video_name):
     print("Generating descriptions for frames...")
     descriptions = []
     context = (
         f"{user_description}\n"
+        f"Video name: {video_name}\n"
         "Describe the key elements in each frame, focusing on the main actions and subjects. "
         "Avoid irrelevant details like the background or clothing unless necessary for context. "
         "Describe each frame as part of a continuous sequence of events."
@@ -61,70 +62,85 @@ def generate_descriptions(frames_folder, user_description):
     for frame in sorted(os.listdir(frames_folder)):
         frame_path = os.path.join(frames_folder, frame)
         image = Image.open(frame_path)
-        prompt = f"{context[:500]}\nFrame description:"  # Limit context to 500 characters
+        prompt = f"{context[:500]}\nFrame description:"  
         description = image_to_text_model(image, max_new_tokens=50)[0]['generated_text']
-        # Filter out irrelevant descriptions
         if not any(irrelevant in description for irrelevant in ["background", "flower", "standing next to", "lion", "wrestling", "flag", "wrestling ring", "white shirt"]):
             descriptions.append(description)
         context += f" {description}"
 
     return descriptions
 
-def summarize_descriptions(descriptions, user_description=""):
+def summarize_descriptions(descriptions, user_description="", video_name=""):
     print("Summarizing descriptions...")
     concatenated_text = user_description + " " + " ".join(descriptions)
-    max_length = min(len(concatenated_text) // 2, 150)
+    prompt = (
+        f"Video name: {video_name}\n"
+        "You are a sports commentator prepared to describe legendary boxers in interviews, general demeanor, and matches. "
+        "Everything you say will be text to speech over a short form video. Only speak as the video narrator. "
+        f"{concatenated_text}"
+    )
+
+    print(f"Sending prompt to OpenAI:\n{prompt}")
+
     response = client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "You are a sports commentator prepared to describe legendary boxers in interviews, general demeanor, and matches. Everything your say will be text to speech over a short form video. Only speak as the video narrator"},
-            {"role": "user", "content": concatenated_text}
+            {"role": "system", "content": "You are a sports commentator prepared to describe legendary boxers in interviews, general demeanor, and matches. Everything you say will be text to speech over a short form video. Only speak as the video narrator."},
+            {"role": "user", "content": prompt}
         ],
         model="gpt-4o"
     )
     summary = response.choices[0].message.content
     return summary
 
-def generate_tts_for_summary(summary, tts_output_folder, rap_beats_folder):
 
+def generate_tts_for_summary(summary, tts_output_folder, instrumental_folder):
     os.makedirs(tts_output_folder, exist_ok=True)
-    tts = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC")
-    tts_output_path = os.path.join(tts_output_folder, "summary_tts.wav")
-    try:
-        print(f"Generating TTS for summary: {summary}")
-        tts.tts_to_file(text=summary, file_path=tts_output_path)
-    except RuntimeError as e:
-        print(f"Error during TTS generation: {e}")
-        return False
+    
    
-    beat_files = [file for file in os.listdir(rap_beats_folder) if file.endswith('.wav')]
+    synthesis_input = texttospeech.SynthesisInput(text=summary)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US",
+        name="en-US-Standard-J" 
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.LINEAR16
+    )
+
+    response = tts_client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
+
+    tts_output_path = os.path.join(tts_output_folder, "summary_tts.wav")
+    with open(tts_output_path, "wb") as out:
+        out.write(response.audio_content)
+        print(f"Generated TTS audio and saved to {tts_output_path}")
+    
+  
+    beat_files = [file for file in os.listdir(instrumental_folder) if file.endswith('.wav')]
     if not beat_files:
         print("No beat files found in the directory.")
         return False
     
-
-    beat_path = os.path.join(rap_beats_folder, random.choice(beat_files))
-    
-
+  
+    beat_path = os.path.join(instrumental_folder, random.choice(beat_files))
     beat_audio = AudioSegment.from_wav(beat_path)
     beat_wav_path = os.path.join(tts_output_folder, "selected_beat.wav")
     beat_audio.export(beat_wav_path, format="wav")
-
     tts_audio = AudioSegment.from_wav(tts_output_path)
     tts_duration_ms = tts_audio.duration_seconds * 1000
+
+    
     if tts_duration_ms < 25 * 1000:
         silence_duration_ms = (25 * 1000) - tts_duration_ms
         silence = AudioSegment.silent(duration=silence_duration_ms)
         tts_audio = tts_audio + silence
         tts_duration_ms = 25 * 1000
 
- 
     if tts_duration_ms > 60 * 1000:
         tts_audio = tts_audio[:60 * 1000]
         tts_duration_ms = 60 * 1000
 
-    beat_audio = beat_audio[:tts_duration_ms]
-    
-
+    beat_audio = beat_audio[:tts_duration_ms]  
     combined = beat_audio.overlay(tts_audio)
     combined_output_path = os.path.join(tts_output_folder, "combined_summary.mp3")
     combined.export(combined_output_path, format="mp3")
@@ -147,24 +163,21 @@ def create_final_clip(video_path, tts_output_folder, project_folder):
     final_output_path = os.path.join(project_folder, output_video_name)
     final_output_temp_path = os.path.join(project_folder, "final_temp_clip.mp4")
 
-   
     if os.path.exists(final_output_temp_path):
         os.remove(final_output_temp_path)
 
- 
     tts_audio = AudioSegment.from_mp3(tts_path)
     tts_duration = tts_audio.duration_seconds
 
-   
     (
         ffmpeg
         .input(video_path, ss=0, t=tts_duration)
         .filter('crop', 'in_h*9/16', 'in_h')
-        .filter('scale', 720, 1280)  # Portrait mode resolution
+        .filter('scale', 720, 1280)  
         .output(final_output_temp_path, vcodec='libx264', pix_fmt='yuv420p')
         .run()
     )
-    
+
     video = ffmpeg.input(final_output_temp_path)
     audio = ffmpeg.input(tts_path)
 
@@ -176,30 +189,67 @@ def create_final_clip(video_path, tts_output_folder, project_folder):
 
     print(f'Final clip saved to "{final_output_path}"')
 
-
 def main(source_folder, old_source_folder, project_folder, user_description=""):
+    instrumental_folders = {
+        "1": "90s_boom-bap",
+        "2": "dark_instrumental",
+        "3": "chill_instrumental",
+        "4": "hardest_darkest",
+        "5": "instrumental_instrumental"
+    }
+
+    instrumental_choice = input(
+        "Select instrumental type (1-5):\n"
+        "1=90s_boom-bap\n"
+        "2=dark_instrumental\n"
+        "3=chill_instrumental\n"
+        "4=hardest_darkest\n"
+        "5=instrumental_instrumental\n"
+        "Enter your choice: "
+    )
+    
+    instrumental_folder = instrumental_folders.get(instrumental_choice)
+    if not instrumental_folder:
+        print("Invalid choice. Exiting...")
+        return
+    
+    necessary_folders = [
+        source_folder,
+        old_source_folder,
+        project_folder,
+        instrumental_folder,
+        'frames',
+        'tts_outputs'
+    ]
+    
+    for folder in necessary_folders:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+    
     if not os.path.exists(old_source_folder):
         os.makedirs(old_source_folder)
         
     for video_file in os.listdir(source_folder):
         video_path = os.path.join(source_folder, video_file)
+        video_name = os.path.splitext(video_file)[0]
         print(f"Processing video: {video_path}")
         
         frames_folder = 'frames'
         tts_output_folder = 'tts_outputs'
-        rap_beats_folder = 'rap_beats'
-        
+
         cleanup_folder(frames_folder)
         cleanup_folder(tts_output_folder)
         extract_frames(video_path, frames_folder)
+
+      
+        descriptions = generate_descriptions(frames_folder, user_description, video_name)
+        summary = summarize_descriptions(descriptions, user_description, video_name)
         
-        descriptions = generate_descriptions(frames_folder, user_description)
-        summary = summarize_descriptions(descriptions, user_description)
         summary_path = os.path.join(tts_output_folder, "summary.txt")
         with open(summary_path, 'w') as f:
             f.write(summary)
         
-        tts_success = generate_tts_for_summary(summary, tts_output_folder, rap_beats_folder)
+        tts_success = generate_tts_for_summary(summary, tts_output_folder, instrumental_folder)
         if not tts_success:
             print(f"Skipping video due to TTS error: {video_path}")
             continue
